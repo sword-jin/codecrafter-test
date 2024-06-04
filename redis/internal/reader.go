@@ -60,6 +60,10 @@ func NewReader(rd io.Reader) *Reader {
 	}
 }
 
+func (r *Reader) Read(buf []byte) (int, error) {
+	return r.rd.Read(buf)
+}
+
 func (r *Reader) Buffered() int {
 	return r.rd.Buffered()
 }

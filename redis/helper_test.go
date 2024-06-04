@@ -40,17 +40,18 @@ func init() {
 	}
 }
 
-func startRedisServer(timeout time.Duration, port int, appendArgs ...func() []string) (close func() error, err error) {
+func newStartRedisServerCmd(port int, appendArgs ...func() []string) *exec.Cmd {
 	args := []string{
 		"--port", strconv.Itoa(port),
 	}
 	for _, f := range appendArgs {
 		args = append(args, f()...)
 	}
-	cmd := exec.Command(
-		yourProgramPath,
-		args...,
-	)
+	return exec.Command(yourProgramPath, args...)
+}
+
+func startRedisServer(timeout time.Duration, port int, appendArgs ...func() []string) (close func() error, err error) {
+	cmd := newStartRedisServerCmd(port, appendArgs...)
 	output := bytes.NewBuffer(nil)
 	cmd.Stdout = output
 	cmd.Stderr = output
@@ -88,6 +89,16 @@ Loop:
 	return func() error {
 		return cmd.Process.Kill()
 	}, nil
+}
+
+// we assume all the operations are finished in 1 second
+func dialConn(t *testing.T, port int) net.Conn {
+	r := require.New(t)
+	conn, err := net.Dial("tcp", "localhost:"+strconv.Itoa(port))
+	r.NoError(err)
+	err = conn.SetDeadline(time.Now().Add(1 * time.Second))
+	r.NoError(err)
+	return conn
 }
 
 // genKey generates a unique key based on current time for testing
@@ -128,6 +139,20 @@ func sendRedisCommand(t *testing.T, conn net.Conn, args ...any) {
 	require.NoError(t, err)
 }
 
+func readBulkString(t *testing.T, reader *internal.Reader) string {
+	r := require.New(t)
+	firstLine, err := reader.ReadLine()
+	r.NoError(err)
+	length, err := strconv.Atoi(string(firstLine[1:]))
+	r.NoError(err)
+
+	buf := make([]byte, length+2) // add the \r\n
+	readN, err := reader.Read(buf)
+	r.NoError(err)
+	r.Equal(readN, length+2)
+	return string(buf)
+}
+
 func assertReadLines(t *testing.T, reader *internal.Reader, expected ...string) {
 	r := require.New(t)
 	for _, e := range expected {
@@ -145,4 +170,11 @@ func assertReadNContains(t *testing.T, ro io.Reader, n int, expected string) {
 	r.NoError(err)
 	a.Equal(n, readN, "actual: %s", string(actual))
 	a.Contains(string(actual), expected)
+}
+
+func assertErrorIsNilOrMatch(t *testing.T, err error, match func(error) bool) {
+	if err == nil {
+		return
+	}
+	require.True(t, match(err))
 }

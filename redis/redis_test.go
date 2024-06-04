@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -216,4 +217,39 @@ func TestInfoCommandOnAReplica(t *testing.T) {
 
 	sendRedisCommand(t, conn, "INFO")
 	assertReadNContains(t, conn, 26+4, "role:slave")
+}
+
+func TestInitialReplicationIDAndOffset(t *testing.T) {
+	r := require.New(t)
+	conn := dialConn(t, 6379)
+	defer conn.Close()
+
+	sendRedisCommand(t, conn, "INFO")
+	s := readBulkString(t, internal.NewReader(conn))
+	lines := strings.Split(s, "\n")
+	r.Equal("# Replication", lines[0])
+	r.Equal("role:master", lines[1])
+	r.True(strings.HasPrefix(lines[2], "master_replid:"))
+	r.Equal(len("master_replid:")+40, len(lines[2]))
+	r.Equal("master_repl_offset:0", strings.TrimSpace(lines[3]))
+}
+
+func TestSendHandshake1(t *testing.T) {
+	r := require.New(t)
+	close, err := startRedisServer(3*time.Second, 6382, func() []string {
+		return []string{"--replicaof", `localhost 6379`}
+	})
+	close()
+	r.NoError(err)
+
+	cmd := newStartRedisServerCmd(6382, func() []string {
+		return []string{"--replicaof", `localhost 26666`} // use a not existing port
+	})
+	r.NoError(cmd.Start())
+	r.Error(cmd.Wait())
+	r.Equal("exit status 1", cmd.ProcessState.String())
+}
+
+func TestSendHandshake2(t *testing.T) {
+	//
 }
