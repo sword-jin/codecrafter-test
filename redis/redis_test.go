@@ -3,6 +3,7 @@ package redis_test
 import (
 	"fmt"
 	"net"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -11,19 +12,23 @@ import (
 	"github.com/sword-jin/codecrafter-test/redis/internal"
 )
 
-func TestBindAPort(t *testing.T) {
-	close := startRedisServer(t, 6379)
-	defer close()
+func TestMain(m *testing.M) {
+	close, err := startRedisServer(3*time.Second, 6379)
+	if err != nil {
+		println(err.Error())
+		os.Exit(1)
+	}
 
-	conn, err := net.Dial("tcp", defaultRedisHost)
-	require.NoError(t, err)
-	defer conn.Close()
+	code := m.Run()
+	close()
+	os.Exit(code)
+}
+
+func TestBindAPort(t *testing.T) {
+	// nothing
 }
 
 func TestRespondToPING(t *testing.T) {
-	close := startRedisServer(t, 6379)
-	defer close()
-
 	r := require.New(t)
 	conn, err := net.Dial("tcp", defaultRedisHost)
 	r.NoError(err)
@@ -33,9 +38,6 @@ func TestRespondToPING(t *testing.T) {
 }
 
 func TestRespondToMultiplePINGs(t *testing.T) {
-	close := startRedisServer(t, 6379)
-	defer close()
-
 	t.Parallel()
 	r := require.New(t)
 	conn, err := net.Dial("tcp", defaultRedisHost)
@@ -49,9 +51,6 @@ func TestRespondToMultiplePINGs(t *testing.T) {
 }
 
 func TestHandleConcurrentClients(t *testing.T) {
-	close := startRedisServer(t, 6379)
-	defer close()
-
 	t.Parallel()
 	r := require.New(t)
 
@@ -74,9 +73,6 @@ func TestHandleConcurrentClients(t *testing.T) {
 }
 
 func TestImplementTheECHOCommand(t *testing.T) {
-	close := startRedisServer(t, 6379)
-	defer close()
-
 	r := require.New(t)
 	conn, err := net.Dial("tcp", defaultRedisHost)
 	r.NoError(err)
@@ -99,9 +95,6 @@ func TestImplementTheECHOCommand(t *testing.T) {
 }
 
 func TestImplementTheSETGETcommands(t *testing.T) {
-	close := startRedisServer(t, 6379)
-	defer close()
-
 	r := require.New(t)
 	conn, err := net.Dial("tcp", defaultRedisHost)
 	r.NoError(err)
@@ -143,9 +136,6 @@ func TestImplementTheSETGETcommands(t *testing.T) {
 }
 
 func TestExpiry(t *testing.T) {
-	close := startRedisServer(t, 6379)
-	defer close()
-
 	r := require.New(t)
 	conn, err := net.Dial("tcp", defaultRedisHost)
 	r.NoError(err)
@@ -187,10 +177,43 @@ func TestExpiry(t *testing.T) {
 }
 
 func TestConfigureListeningPort(t *testing.T) {
-	close := startRedisServer(t, 6382)
+	r := require.New(t)
+
+	close, err := startRedisServer(3*time.Second, 6382)
 	defer close()
+	r.NoError(err)
 
 	conn, err := net.Dial("tcp", "localhost:6382")
 	require.NoError(t, err)
 	defer conn.Close()
+}
+
+func TestTheInfoCommand(t *testing.T) {
+	t.Log(`I assume you reply:
+# Replication
+role:master`)
+
+	r := require.New(t)
+	conn, err := net.Dial("tcp", "localhost:6379")
+	r.NoError(err)
+	defer conn.Close()
+
+	sendRedisCommand(t, conn, "INFO")
+	assertReadNContains(t, conn, 26+4, "role:master")
+}
+
+func TestInfoCommandOnAReplica(t *testing.T) {
+	close, err := startRedisServer(3*time.Second, 6382, func() []string {
+		return []string{"--replicaof", `localhost 6379`}
+	})
+	defer close()
+
+	r := require.New(t)
+	r.NoError(err)
+	conn, err := net.Dial("tcp", "localhost:6382")
+	r.NoError(err)
+	defer conn.Close()
+
+	sendRedisCommand(t, conn, "INFO")
+	assertReadNContains(t, conn, 26+4, "role:slave")
 }

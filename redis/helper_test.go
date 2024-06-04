@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/sword-jin/codecrafter-test/redis/internal"
 )
@@ -38,39 +40,54 @@ func init() {
 	}
 }
 
-func startRedisServer(t *testing.T, port int) (close func()) {
+func startRedisServer(timeout time.Duration, port int, appendArgs ...func() []string) (close func() error, err error) {
+	args := []string{
+		"--port", strconv.Itoa(port),
+	}
+	for _, f := range appendArgs {
+		args = append(args, f()...)
+	}
 	cmd := exec.Command(
 		yourProgramPath,
-		"--port",
-		strconv.Itoa(port),
+		args...,
 	)
 	output := bytes.NewBuffer(nil)
 	cmd.Stdout = output
 	cmd.Stderr = output
 
 	defer func() {
-		if t.Failed() {
-			t.Log("Redis server output:")
-			println(output.String())
+		if err != nil {
+			println("redis-server output:")
+			fmt.Println(output.String())
 		}
 	}()
 
-	err := cmd.Start()
-	require.NoError(t, err)
+	err = cmd.Start()
+	if err != nil {
+		return
+	}
 
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+Loop:
 	for {
-		conn, err := net.Dial("tcp", "localhost:"+strconv.Itoa(port))
-		if err == nil {
-			defer conn.Close()
-			break
+		select {
+		case <-timer.C:
+			err = fmt.Errorf("timeout starting redis-server")
+			return
+		default:
+			conn, err := net.Dial("tcp", "localhost:"+strconv.Itoa(port))
+			if err == nil {
+				defer conn.Close()
+				break Loop
+			}
+			time.Sleep(1 * time.Second)
 		}
-		t.Log("Waiting for redis server to start...")
-		time.Sleep(100 * time.Millisecond)
 	}
 
-	return func() {
-		require.NoError(t, cmd.Process.Kill())
-	}
+	return func() error {
+		return cmd.Process.Kill()
+	}, nil
 }
 
 // genKey generates a unique key based on current time for testing
@@ -109,4 +126,23 @@ func sendRedisCommand(t *testing.T, conn net.Conn, args ...any) {
 	require.NoError(t, err)
 	_, err = conn.Write(buf.Bytes())
 	require.NoError(t, err)
+}
+
+func assertReadLines(t *testing.T, reader *internal.Reader, expected ...string) {
+	r := require.New(t)
+	for _, e := range expected {
+		a, err := reader.ReadLine()
+		r.NoError(err)
+		r.Equal(e, string(a))
+	}
+}
+
+func assertReadNContains(t *testing.T, ro io.Reader, n int, expected string) {
+	r := require.New(t)
+	a := assert.New(t)
+	actual := make([]byte, n)
+	readN, err := ro.Read(actual)
+	r.NoError(err)
+	a.Equal(n, readN, "actual: %s", string(actual))
+	a.Contains(string(actual), expected)
 }
