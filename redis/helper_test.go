@@ -19,6 +19,12 @@ import (
 	"github.com/sword-jin/codecrafter-test/redis/internal"
 )
 
+const (
+	ping = "*1\r\n$4\r\nPING\r\n"
+	pong = "+PONG\r\n"
+	ok   = "+OK\r\n"
+)
+
 var (
 	yourProgramPath string
 )
@@ -87,7 +93,15 @@ Loop:
 	}
 
 	return func() error {
-		return cmd.Process.Kill()
+		err := cmd.Process.Kill()
+		// println("master redis-server output:")
+		// fmt.Println(output.String())
+		if err != nil {
+			println("redis-server output:")
+			fmt.Println(output.String())
+			return err
+		}
+		return nil
 	}, nil
 }
 
@@ -119,7 +133,7 @@ func newContext() (context.Context, func()) {
 
 func assertPing(t *testing.T, conn net.Conn) {
 	r := require.New(t)
-	_, err := conn.Write([]byte("*1\r\n$4\r\nPING\r\n"))
+	_, err := conn.Write([]byte(ping))
 	r.NoError(err)
 
 	var b = make([]byte, 7)

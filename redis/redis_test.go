@@ -234,13 +234,67 @@ func TestInitialReplicationIDAndOffset(t *testing.T) {
 	r.Equal("master_repl_offset:0", strings.TrimSpace(lines[3]))
 }
 
+// assume 36392 is not used
+func startRedisServerWithAFakeMaster(t *testing.T) (*fakeRedisServer, net.Conn, func() error) {
+	r := require.New(t)
+	fakeRedis := newFakeRedisServer(t, 36382)
+	connCh := make(chan net.Conn, 1)
+	go func() {
+		connCh <- fakeRedis.accept(3 * time.Second)
+	}()
+
+	close, err := startRedisServer(3*time.Second, 36393, func() []string {
+		return []string{"--replicaof", `localhost 36382`}
+	})
+	r.NoError(err)
+
+	conn := <-connCh
+	return fakeRedis, conn, close
+}
+
 func TestSendHandshake1(t *testing.T) {
+	fakeRedis, conn, close := startRedisServerWithAFakeMaster(t)
+	defer close()
+	defer conn.Close()
+
+	fakeRedis.assertReceiveAndReply(conn, ping, []byte(pong))
+}
+
+func TestSendHandshake2(t *testing.T) {
+	fakeRedis, conn, close := startRedisServerWithAFakeMaster(t)
+	defer close()
+	defer conn.Close()
+
+	fakeRedis.assertReceiveAndReply(conn, ping, []byte(pong))
+	fakeRedis.assertReceiveAndReply(
+		conn,
+		fmt.Sprintf("*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$5\r\n%d\r\n", 36393),
+		[]byte(ok))
+}
+
+func TestSendHandshake3(t *testing.T) {
+	fakeRedis, conn, close := startRedisServerWithAFakeMaster(t)
+	defer close()
+	defer conn.Close()
+
+	fakeRedis.assertReceiveAndReply(conn, ping, []byte(pong))
+	fakeRedis.assertReceiveAndReply(
+		conn,
+		fmt.Sprintf("*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$5\r\n%d\r\n", 36393),
+		[]byte(ok))
+	fakeRedis.assertReceiveAndReply(
+		conn,
+		"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n",
+		[]byte(ok))
+}
+
+func TestReceiveHandshake1(t *testing.T) {
 	r := require.New(t)
 	close, err := startRedisServer(3*time.Second, 6382, func() []string {
 		return []string{"--replicaof", `localhost 6379`}
 	})
-	close()
 	r.NoError(err)
+	close()
 
 	cmd := newStartRedisServerCmd(6382, func() []string {
 		return []string{"--replicaof", `localhost 26666`} // use a not existing port
@@ -250,6 +304,34 @@ func TestSendHandshake1(t *testing.T) {
 	r.Equal("exit status 1", cmd.ProcessState.String())
 }
 
-func TestSendHandshake2(t *testing.T) {
-	//
+func TestReceiveHandshake2(t *testing.T) {
+	TestReceiveHandshake1(t)
+}
+
+type fakeRedisServer struct {
+	t  *testing.T
+	r  *require.Assertions
+	ln net.Listener
+}
+
+func newFakeRedisServer(t *testing.T, port int) *fakeRedisServer {
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	r := require.New(t)
+	r.NoError(err)
+
+	return &fakeRedisServer{ln: ln, t: t, r: r}
+}
+
+func (s *fakeRedisServer) accept(timeout time.Duration) net.Conn {
+	s.ln.(*net.TCPListener).SetDeadline(time.Now().Add(timeout))
+	conn, err := s.ln.Accept()
+	s.r.NoError(err)
+	return conn
+}
+
+func (s *fakeRedisServer) assertReceiveAndReply(conn net.Conn, expected string, reply []byte) {
+	conn.(*net.TCPConn).SetDeadline(time.Now().Add(3 * time.Second))
+	assertReadNContains(s.t, conn, len(expected), string(expected))
+	_, err := conn.Write(reply)
+	s.r.NoError(err)
 }
