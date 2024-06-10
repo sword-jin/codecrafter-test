@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -277,7 +278,7 @@ func TestSendHandshake3(t *testing.T) {
 	fakeRedis.assertReceiveAndReply(
 		conn,
 		"*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n",
-		[]byte(fmt.Sprintf("+FULLRESYNC %s 0\r\n", strings.Repeat("abcd", 10)))) // 40 length replid
+		[]byte(fmt.Sprintf("+FULLRESYNC %s 0\r\n", strings.Repeat("abcd", 10))))
 }
 
 func TestReceiveHandshake1(t *testing.T) {
@@ -408,4 +409,35 @@ func testMultiReplicaPropagation(t *testing.T, count int, verifyReplica bool) {
 			assertGetValue(t, conn, key, strconv.Itoa(value))
 		}
 	}
+}
+
+var fullResyncRegex = regexp.MustCompile(`\+FULLRESYNC (?P<replid>\w{40}) (?P<offset>\d+)\r\n`)
+
+func TestACKsWithNoCommands(t *testing.T) {
+	t.Logf(`I need to start a master and a slave by your program, I have nothing to assert in this test.
+	Because from now on, nothing exposes to me in the ACKs feature,
+	Check the next test`)
+	conn, master := startMaster(t)
+	defer conn.Close()
+	defer master.close()
+
+	sendRedisCommand(t, conn, "PSYNC", "?", "-1")
+	actual := readN(t, conn, 56)
+	require.True(t, fullResyncRegex.Match(actual))
+}
+
+func TestACKsWithCommands(t *testing.T) {
+	t.Logf(`I need to start a master and a slave by your program, I have nothing to assert in this test.
+	Because from now on, nothing exposes to me in the ACKs feature,
+	check the next test`)
+}
+
+func TestWithNoReplicas(t *testing.T) {
+	t.Logf("Same reason as the last two tests, I only send a WAIT command to the master")
+	conn, master := startMaster(t)
+	defer conn.Close()
+	defer master.close()
+	sendRedisCommand(t, conn, "WAIT", "0", "60000")
+	actual := readN(t, conn, 1)
+	require.Equal(t, []byte(`0`), actual)
 }

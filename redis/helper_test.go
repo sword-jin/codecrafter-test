@@ -219,16 +219,23 @@ func assertReadLines(t *testing.T, reader *internal.Reader, expected ...string) 
 	}
 }
 
+func readN(t *testing.T, conn net.Conn, n int) []byte {
+	r := require.New(t)
+	actual := make([]byte, n)
+	conn.(*net.TCPConn).SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	readN, err := conn.Read(actual)
+	r.NoError(err)
+	r.Equal(n, readN, "actual: %s", string(actual))
+	return actual
+}
+
 func assertReadNContains(t *testing.T, ro net.Conn, n int, expected string) {
 	r := require.New(t)
 	a := assert.New(t)
-	actual := make([]byte, n)
-	ro.(*net.TCPConn).SetReadDeadline(time.Now().Add(200 * time.Millisecond))
-	readN, err := ro.Read(actual)
-	r.NoError(err)
-	a.Equal(n, readN, "actual: %s", string(actual))
+	actual := readN(t, ro, n)
 	a.Contains(string(actual), expected)
 	// after read, we should read all the remaining bytes
+	var err error
 	for {
 		b := make([]byte, 1)
 		_, err = ro.Read(b)
@@ -304,4 +311,11 @@ func assertGetValue(t *testing.T, conn net.Conn, key, value string) {
 	a2, err := reader.ReadLine()
 	r.NoError(err)
 	r.Equal([]byte(value), a2)
+}
+
+func assertReceiveOk(t *testing.T, conn net.Conn) {
+	r := require.New(t)
+	conn.(*net.TCPConn).SetDeadline(time.Now().Add(3 * time.Second))
+	actual := readN(t, conn, 5)
+	r.Equal([]byte(ok), actual)
 }
