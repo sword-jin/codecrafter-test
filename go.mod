@@ -3,6 +3,7 @@ module github.com/sword-jin/codecrafter-test
 go 1.22.3
 
 require (
+	github.com/hdt3213/rdb v1.0.16
 	github.com/redis/go-redis/v9 v9.5.2
 	github.com/stretchr/testify v1.9.0
 )

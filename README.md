@@ -24,7 +24,7 @@ YOUR_REDIS_PROGRAM_PATH=???/codecrafters-redis-rust/spawn_redis_server.sh go tes
 | Course                     | Status | Link                                            |
 | -------------------------- | ------ | ----------------------------------------------- |
 | Build your own HTTP server | Free   | https://app.codecrafters.io/courses/http-server |
-| Build your own Redis       | 13/44  | https://app.codecrafters.io/courses/redis/      |
+| Build your own Redis       | 50%    | https://app.codecrafters.io/courses/redis/      |
 
 ## Important
 

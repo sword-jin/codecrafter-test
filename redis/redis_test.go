@@ -1,50 +1,41 @@
 package redis_test
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"net"
-	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/hdt3213/rdb/core"
+	"github.com/hdt3213/rdb/model"
 	"github.com/stretchr/testify/require"
 	"github.com/sword-jin/codecrafter-test/redis/internal"
 )
 
-func TestMain(m *testing.M) {
-	close, err := startRedisServer(3*time.Second, 6379)
-	if err != nil {
-		println(err.Error())
-		os.Exit(1)
-	}
-
-	code := m.Run()
-	close()
-	os.Exit(code)
-}
-
 func TestBindAPort(t *testing.T) {
 	// nothing
+	conn, node := startMasterOn6379(t)
+	conn.Close()
+	node.close()
 }
 
 func TestRespondToPING(t *testing.T) {
-	r := require.New(t)
-	conn, err := net.Dial("tcp", defaultRedisHost)
-	r.NoError(err)
+	conn, node := startMasterOn6379(t)
 	defer conn.Close()
+	defer node.close()
 
 	assertPing(t, conn)
 }
 
 func TestRespondToMultiplePINGs(t *testing.T) {
-	t.Parallel()
-	r := require.New(t)
-	conn, err := net.Dial("tcp", defaultRedisHost)
-	r.NoError(err)
-
+	conn, node := startMasterOn6379(t)
 	defer conn.Close()
+	defer node.close()
 
 	for i := 0; i < 10; i++ {
 		assertPing(t, conn)
@@ -52,8 +43,9 @@ func TestRespondToMultiplePINGs(t *testing.T) {
 }
 
 func TestHandleConcurrentClients(t *testing.T) {
-	t.Parallel()
-	r := require.New(t)
+	conn, node := startMasterOn6379(t)
+	conn.Close()
+	defer node.close()
 
 	wg := &sync.WaitGroup{}
 	wg.Add(10)
@@ -61,8 +53,7 @@ func TestHandleConcurrentClients(t *testing.T) {
 		go func() {
 			time.Sleep(10 * time.Microsecond)
 			defer wg.Done()
-			conn, err := net.Dial("tcp", defaultRedisHost)
-			r.NoError(err)
+			conn := node.dial()
 			defer conn.Close()
 
 			for i := 0; i < 10; i++ {
@@ -74,10 +65,11 @@ func TestHandleConcurrentClients(t *testing.T) {
 }
 
 func TestImplementTheECHOCommand(t *testing.T) {
-	r := require.New(t)
-	conn, err := net.Dial("tcp", defaultRedisHost)
-	r.NoError(err)
+	conn, node := startMasterOn6379(t)
 	defer conn.Close()
+	defer node.close()
+
+	r := require.New(t)
 	reader := internal.NewReader(conn)
 
 	for i := 0; i < 10; i++ {
@@ -96,10 +88,11 @@ func TestImplementTheECHOCommand(t *testing.T) {
 }
 
 func TestImplementTheSETGETcommands(t *testing.T) {
-	r := require.New(t)
-	conn, err := net.Dial("tcp", defaultRedisHost)
-	r.NoError(err)
+	conn, node := startMasterOn6379(t)
 	defer conn.Close()
+	defer node.close()
+
+	r := require.New(t)
 	reader := internal.NewReader(conn)
 
 	for i := 0; i < 10; i++ {
@@ -137,17 +130,18 @@ func TestImplementTheSETGETcommands(t *testing.T) {
 }
 
 func TestExpiry(t *testing.T) {
-	r := require.New(t)
-	conn, err := net.Dial("tcp", defaultRedisHost)
-	r.NoError(err)
+	conn, node := startMasterOn6379(t)
 	defer conn.Close()
+	defer node.close()
+
+	r := require.New(t)
 	reader := internal.NewReader(conn)
 
 	key := genKey()
 
 	{
 		sendRedisCommand(t, conn, "GET", key)
-		_, err = reader.ReadLine()
+		_, err := reader.ReadLine()
 		r.ErrorIs(err, internal.Nil)
 	}
 
@@ -172,57 +166,48 @@ func TestExpiry(t *testing.T) {
 	time.Sleep(1 * time.Second)
 	{
 		sendRedisCommand(t, conn, "GET", key)
-		_, err = reader.ReadLine()
+		_, err := reader.ReadLine()
 		r.ErrorIs(err, internal.Nil)
 	}
 }
 
 func TestConfigureListeningPort(t *testing.T) {
-	r := require.New(t)
-
-	close, err := startRedisServer(3*time.Second, 6382)
-	defer close()
-	r.NoError(err)
-
-	conn, err := net.Dial("tcp", "localhost:6382")
-	require.NoError(t, err)
-	defer conn.Close()
+	conn, node := startMaster(t) // on a random port
+	conn.Close()
+	node.close()
 }
 
 func TestTheInfoCommand(t *testing.T) {
+	conn, node := startMaster(t)
+	defer conn.Close()
+	defer node.close()
+
 	t.Log(`I assume you reply:
 # Replication
 role:master`)
 
 	r := require.New(t)
-	conn, err := net.Dial("tcp", "localhost:6379")
-	r.NoError(err)
-	defer conn.Close()
 
 	sendRedisCommand(t, conn, "INFO")
-	assertReadNContains(t, conn, 26+4, "role:master")
+	info := readBulkString(t, internal.NewReader(conn))
+	r.Contains(info, "role:master")
 }
 
 func TestInfoCommandOnAReplica(t *testing.T) {
-	close, err := startRedisServer(3*time.Second, 6382, func() []string {
-		return []string{"--replicaof", `localhost 6379`}
-	})
+	_, slave, close := startMasterAndSlave(t)
 	defer close()
-
-	r := require.New(t)
-	r.NoError(err)
-	conn, err := net.Dial("tcp", "localhost:6382")
-	r.NoError(err)
+	conn := slave.dial()
 	defer conn.Close()
-
 	sendRedisCommand(t, conn, "INFO")
 	assertReadNContains(t, conn, 26+4, "role:slave")
 }
 
 func TestInitialReplicationIDAndOffset(t *testing.T) {
-	r := require.New(t)
-	conn := dialConn(t, 6379)
+	conn, node := startMaster(t)
 	defer conn.Close()
+	defer node.close()
+
+	r := require.New(t)
 
 	sendRedisCommand(t, conn, "INFO")
 	s := readBulkString(t, internal.NewReader(conn))
@@ -237,19 +222,20 @@ func TestInitialReplicationIDAndOffset(t *testing.T) {
 // assume 36392 is not used
 func startRedisServerWithAFakeMaster(t *testing.T) (*fakeRedisServer, net.Conn, func() error) {
 	r := require.New(t)
-	fakeRedis := newFakeRedisServer(t, 36382)
+	port := freePort(t)
+	fakeRedis := newFakeRedisServer(t, port)
 	connCh := make(chan net.Conn, 1)
 	go func() {
 		connCh <- fakeRedis.accept(3 * time.Second)
 	}()
 
-	close, err := startRedisServer(3*time.Second, 36393, func() []string {
-		return []string{"--replicaof", `localhost 36382`}
-	})
+	_, close, err := startRedisServer(3*time.Second, 36393, "--replicaof", fmt.Sprintf(`localhost %d`, port))
 	r.NoError(err)
 
 	conn := <-connCh
-	return fakeRedis, conn, close
+	return fakeRedis, conn, func() error {
+		return errors.Join(fakeRedis.ln.Close(), close())
+	}
 }
 
 func TestSendHandshake1(t *testing.T) {
@@ -284,54 +270,142 @@ func TestSendHandshake3(t *testing.T) {
 		[]byte(ok))
 	fakeRedis.assertReceiveAndReply(
 		conn,
-		"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n",
-		[]byte(ok))
+		"$8\r\nREPLCONF\r\n$4\r\ncapa\r\n",
+		[]byte(ok),
+		4, // we read 4 bytes more, because the $length is uncertain
+	)
+	fakeRedis.assertReceiveAndReply(
+		conn,
+		"*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n",
+		[]byte(fmt.Sprintf("+FULLRESYNC %s 0\r\n", strings.Repeat("abcd", 10)))) // 40 length replid
 }
 
 func TestReceiveHandshake1(t *testing.T) {
-	r := require.New(t)
-	close, err := startRedisServer(3*time.Second, 6382, func() []string {
-		return []string{"--replicaof", `localhost 6379`}
-	})
-	r.NoError(err)
-	close()
-
-	cmd := newStartRedisServerCmd(6382, func() []string {
-		return []string{"--replicaof", `localhost 26666`} // use a not existing port
-	})
-	r.NoError(cmd.Start())
-	r.Error(cmd.Wait())
-	r.Equal("exit status 1", cmd.ProcessState.String())
+	_, _, close := startMasterAndSlave(t)
+	defer close()
 }
 
 func TestReceiveHandshake2(t *testing.T) {
+	// same as TestReceiveHandshake1
 	TestReceiveHandshake1(t)
 }
 
-type fakeRedisServer struct {
-	t  *testing.T
-	r  *require.Assertions
-	ln net.Listener
-}
-
-func newFakeRedisServer(t *testing.T, port int) *fakeRedisServer {
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+func TestEmptyRDBTransfer(t *testing.T) {
 	r := require.New(t)
+	defer func() {
+		if t.Failed() {
+			t.Log("be careful, debug your server")
+		}
+	}()
+
+	conn, master := startMaster(t)
+	defer conn.Close()
+	defer master.close()
+
+	reader := internal.NewReader(conn)
+
+	assertPing(t, conn)
+	{
+		_, err := conn.Write([]byte(fmt.Sprintf("*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n%d\r\n", 6382)))
+		r.NoError(err)
+		a1, err := reader.ReadLine()
+		r.NoError(err)
+		r.Equal([]byte("+OK"), a1)
+	}
+	{
+		_, err := conn.Write([]byte("*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$9\r\neof capa2\r\n"))
+		r.NoError(err)
+		a1, err := reader.ReadLine()
+		r.NoError(err)
+		r.Equal([]byte("+OK"), a1)
+	}
+
+	{
+		_, err := conn.Write([]byte("*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n"))
+		r.NoError(err)
+		line, err := reader.ReadLine()
+		r.NoError(err)
+		tmp := strings.Split(string(line), " ")
+		r.Equal("+FULLRESYNC", tmp[0])
+		r.Equal(40, len(tmp[1])) // replid
+		r.Equal("0", tmp[2])     // offset always 0
+	}
+
+	// RDB transfer
+	conn.(*net.TCPConn).SetReadDeadline(time.Now().Add(1 * time.Second))
+	var line = make([]byte, 5)
+	_, err := conn.Read(line)
 	r.NoError(err)
 
-	return &fakeRedisServer{ln: ln, t: t, r: r}
+	rdbContentLen, err := strconv.Atoi(strings.TrimSpace(string(line[1:])))
+	r.NoError(err, "expecting a number after $")
+	rdbContent := make([]byte, rdbContentLen)
+	_, err = conn.(*net.TCPConn).Read(rdbContent)
+	r.NoError(err)
+
+	decoder := core.NewDecoder(bytes.NewReader(rdbContent))
+	err = decoder.Parse(func(object model.RedisObject) bool {
+		r.False(true, "should be a empty rdb file")
+		return true
+	})
+	r.NoError(err)
 }
 
-func (s *fakeRedisServer) accept(timeout time.Duration) net.Conn {
-	s.ln.(*net.TCPListener).SetDeadline(time.Now().Add(timeout))
-	conn, err := s.ln.Accept()
-	s.r.NoError(err)
-	return conn
+func TestSingleReplicaPropagation(t *testing.T) {
+	testMultiReplicaPropagation(t, 1, false)
 }
 
-func (s *fakeRedisServer) assertReceiveAndReply(conn net.Conn, expected string, reply []byte) {
-	conn.(*net.TCPConn).SetDeadline(time.Now().Add(3 * time.Second))
-	assertReadNContains(s.t, conn, len(expected), string(expected))
-	_, err := conn.Write(reply)
-	s.r.NoError(err)
+func TestMultiReplicaPropagation(t *testing.T) {
+	slaveCount := 5
+	testMultiReplicaPropagation(t, slaveCount, false)
+}
+
+func TestCommandProcessing(t *testing.T) {
+	testMultiReplicaPropagation(t, 1, true)
+}
+
+func testMultiReplicaPropagation(t *testing.T, count int, verifyReplica bool) {
+	t.Logf("I will start %d slaves and a master, and set some values on the master", count)
+	if verifyReplica {
+		t.Log("then verify the values on the slaves.")
+	}
+
+	r := require.New(t)
+	masterConn, master := startMaster(t)
+	defer masterConn.Close()
+	defer master.close()
+
+	conns := make([]net.Conn, count)
+	for i := 0; i < count; i++ {
+		var slave nodeInfo
+		conns[i], slave = master.startSlave()
+		defer slave.close()
+		defer conns[i].Close()
+	}
+
+	values := map[string]int{
+		"foo": 1,
+		"bar": 2,
+		"baz": 3,
+	}
+	reader := internal.NewReader(masterConn)
+	for key, value := range values {
+		_, err := masterConn.Write([]byte(fmt.Sprintf("*3\r\n$3\r\nSET\r\n$%d\r\n%s\r\n$%d\r\n%d\r\n", len(key), key, len(strconv.Itoa(value)), value)))
+		r.NoError(err)
+		a1, err := reader.ReadLine()
+		r.NoError(err)
+		r.Equal([]byte("+OK"), a1)
+	}
+
+	// verify
+	if !verifyReplica {
+		return
+	}
+
+	for _, conn := range conns {
+		defer conn.Close()
+		for key, value := range values {
+			assertGetValue(t, conn, key, strconv.Itoa(value))
+		}
+	}
 }
