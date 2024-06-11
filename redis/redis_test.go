@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"regexp"
 	"strconv"
@@ -363,6 +364,7 @@ func TestMultiReplicaPropagation(t *testing.T) {
 
 func TestCommandProcessing(t *testing.T) {
 	testMultiReplicaPropagation(t, 1, true)
+	testMultiReplicaPropagation(t, 5, true)
 }
 
 func testMultiReplicaPropagation(t *testing.T, count int, verifyReplica bool) {
@@ -433,11 +435,92 @@ func TestACKsWithCommands(t *testing.T) {
 }
 
 func TestWithNoReplicas(t *testing.T) {
-	t.Logf("Same reason as the last two tests, I only send a WAIT command to the master")
 	conn, master := startMaster(t)
 	defer conn.Close()
 	defer master.close()
 	sendRedisCommand(t, conn, "WAIT", "0", "60000")
-	actual := readN(t, conn, 1)
-	require.Equal(t, []byte(`0`), actual)
+	reader := internal.NewReader(conn)
+	actual, err := reader.ReadInt()
+	require.NoError(t, err)
+	require.Equal(t, int64(0), actual)
+}
+
+func TestWaitWithNoCommands(t *testing.T) {
+	masterConn, master := startMaster(t)
+	defer masterConn.Close()
+	defer master.close()
+
+	var replicas_count int
+	for {
+		replicas_count = rand.IntN(10)
+		if replicas_count > 0 {
+			break
+		}
+	}
+	t.Logf("I will start %d slaves and a master, and send WAIT commands to the master", replicas_count)
+	for i := 0; i < replicas_count; i++ {
+		conn, slave := master.startSlave()
+		defer slave.close()
+		defer conn.Close()
+	}
+
+	sendRedisCommand(t, masterConn, "WAIT", "1", "500")
+	assertReceiveInteger(t, masterConn, replicas_count)
+	sendRedisCommand(t, masterConn, "WAIT", "3", "500")
+	assertReceiveInteger(t, masterConn, replicas_count)
+	sendRedisCommand(t, masterConn, "WAIT", "5", "500")
+	assertReceiveInteger(t, masterConn, replicas_count)
+	sendRedisCommand(t, masterConn, "WAIT", "7", "500")
+	assertReceiveInteger(t, masterConn, replicas_count)
+	sendRedisCommand(t, masterConn, "WAIT", "9", "500")
+	assertReceiveInteger(t, masterConn, replicas_count)
+}
+
+func TestWaitWithMultipleCommands(t *testing.T) {
+	r := require.New(t)
+
+	masterConn, master := startMaster(t)
+	masterReader := internal.NewReader(masterConn)
+	defer masterConn.Close()
+	defer master.close()
+
+	var replicas_count int
+	for {
+		replicas_count = rand.IntN(10)
+		if replicas_count > 4 {
+			break
+		}
+	}
+	brokenSlaveCount := replicas_count / 2
+	t.Logf("I will start %d mock slaves(%d of them are broken) and a master, and send WAIT commands to the master", replicas_count, brokenSlaveCount)
+
+	mockSlaves := make([]net.Conn, replicas_count)
+	for i := 0; i < replicas_count; i++ {
+		conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", master.port))
+		r.NoError(err)
+		mockSlaves[i] = conn
+		sendRedisCommand(t, conn, "PSYNC", "?", "-1")
+		actual := readN(t, conn, 56)
+		r.True(fullResyncRegex.Match(actual))
+	}
+
+	sendRedisCommand(t, masterConn, "SET", "foo", "123")
+	ok, err := masterReader.ReadLine()
+	r.NoError(err)
+	r.Equal("+OK", string(ok))
+
+	for i, conn := range mockSlaves {
+		if i >= brokenSlaveCount {
+			// normal slave
+			sendRedisCommand(t, conn, "REPLCONF", "ACK", "31") // "set foo 123" is 31 bytes
+		}
+	}
+
+	r.Eventually(func() bool {
+		sendRedisCommand(t, masterConn, "WAIT", fmt.Sprintf("%d", replicas_count), "500")
+		synced, err := masterReader.ReadInt()
+		r.NoError(err)
+		t.Logf("checking, synced %d", synced)
+		return synced == int64(replicas_count-brokenSlaveCount)
+	}, 10*time.Second, 100*time.Millisecond)
 }

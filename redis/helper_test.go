@@ -114,7 +114,7 @@ func startRedisServer(timeout time.Duration, port int, args ...string) (conn net
 
 	defer func() {
 		if err != nil {
-			println("redis-server output:")
+			fmt.Printf("redis-server on %d output:", port)
 			fmt.Println(output.String())
 		}
 	}()
@@ -142,6 +142,8 @@ Loop:
 		}
 	}
 
+	conn.(*net.TCPConn).SetReadDeadline(time.Now().Add(60 * time.Second)) // keep the root connection alive longer
+
 	return conn, func() error {
 		err := cmd.Process.Kill()
 		// println("master redis-server output:")
@@ -160,7 +162,7 @@ func dialConn(t *testing.T, port int) net.Conn {
 	r := require.New(t)
 	conn, err := net.Dial("tcp", "localhost:"+strconv.Itoa(port))
 	r.NoError(err)
-	err = conn.SetDeadline(time.Now().Add(1 * time.Second))
+	err = conn.SetDeadline(time.Now().Add(3 * time.Second))
 	r.NoError(err)
 	return conn
 }
@@ -282,14 +284,12 @@ func newFakeRedisServer(t *testing.T, port int) *fakeRedisServer {
 }
 
 func (s *fakeRedisServer) accept(timeout time.Duration) net.Conn {
-	s.ln.(*net.TCPListener).SetDeadline(time.Now().Add(timeout))
 	conn, err := s.ln.Accept()
 	s.r.NoError(err)
 	return conn
 }
 
 func (s *fakeRedisServer) assertReceiveAndReply(conn net.Conn, expected string, reply []byte, skipNBytes ...int) {
-	conn.(*net.TCPConn).SetDeadline(time.Now().Add(3 * time.Second))
 	expectedRead := len(expected)
 	for _, n := range skipNBytes {
 		expectedRead += n
@@ -315,7 +315,14 @@ func assertGetValue(t *testing.T, conn net.Conn, key, value string) {
 
 func assertReceiveOk(t *testing.T, conn net.Conn) {
 	r := require.New(t)
-	conn.(*net.TCPConn).SetDeadline(time.Now().Add(3 * time.Second))
 	actual := readN(t, conn, 5)
 	r.Equal([]byte(ok), actual)
+}
+
+func assertReceiveInteger(t *testing.T, conn net.Conn, expected int) {
+	r := require.New(t)
+	reader := internal.NewReader(conn)
+	actual, err := reader.ReadInt()
+	r.NoError(err)
+	r.Equal(int64(expected), actual)
 }
