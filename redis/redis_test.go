@@ -582,3 +582,17 @@ func TestWaitWithMultipleCommands(t *testing.T) {
 		return synced == int64(replicas_count-brokenSlaveCount)
 	}, 10*time.Second, 100*time.Millisecond)
 }
+
+func TestRDBFileConfig(t *testing.T) {
+	dir := "/tmp/redis-files"
+	filename := "dump.rdb"
+	conn, master := startNode(t, freePort(t), "--dir", dir, "--dbfilename", filename)
+	defer conn.Close()
+	defer master.close()
+	sendRedisCommand(t, conn, "CONFIG", "GET", "dir")
+	assertGetArray(t, conn, "dir", dir)
+	sendRedisCommand(t, conn, "CONFIG", "GET", "dbfilename")
+	assertGetArray(t, conn, "dbfilename", filename)
+	sendRedisCommand(t, conn, "CONFIG", "GET", "other")
+	assertGetArray(t, conn)
+}

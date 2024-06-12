@@ -336,3 +336,16 @@ func assertReceiveInteger(t *testing.T, conn net.Conn, expected int) {
 	r.NoError(err)
 	r.Equal(int64(expected), actual)
 }
+
+func assertGetArray(t *testing.T, conn net.Conn, expected ...string) {
+	r := require.New(t)
+	reader := internal.NewReader(conn)
+	length, err := reader.ReadArrayLen()
+	r.NoError(err)
+	r.Len(expected, length)
+	for i, e := range expected {
+		actual, err := reader.ReadString()
+		r.NoError(err)
+		r.Equal(e, actual, "index: %d", i)
+	}
+}
