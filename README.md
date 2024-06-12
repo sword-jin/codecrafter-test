@@ -16,7 +16,7 @@ Echo project as one test.go file, the order of the test is the same as the cours
 
 ```
 $ cd redis
-YOUR_REDIS_PROGRAM_PATH=???/codecrafters-redis-rust/spawn_redis_server.sh go test -run "TestBindAPort"
+YOUR_REDIS_PROGRAM_PATH=???/codecrafters-redis-rust/spawn_redis_server.sh go test -run "TestBindAPort" -v
 ```
 
 ## Supported Courses

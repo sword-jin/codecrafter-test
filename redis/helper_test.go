@@ -48,6 +48,7 @@ type nodeInfo struct {
 	isMaster bool
 	port     int
 	close    func() error
+	output   *bytes.Buffer
 }
 
 func (n nodeInfo) startSlave() (net.Conn, nodeInfo) {
@@ -61,10 +62,70 @@ func (n nodeInfo) dial() net.Conn {
 }
 
 func startNode(t *testing.T, port int, args ...string) (net.Conn, nodeInfo) {
-	conn, close, err := startRedisServer(3*time.Second, port, args...)
+	timeout := 3 * time.Second
+checkPort:
+	for {
+		select {
+		case <-time.After(timeout):
+			t.Fatalf("port %d is not free", port)
+		default:
+			conn, err := net.Dial("tcp", "localhost:"+strconv.Itoa(port))
+			if err != nil {
+				break checkPort
+			}
+			conn.Close()
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+
+	cmd := newStartRedisServerCmd(port, args...)
+	output := bytes.NewBuffer(nil)
+	cmd.Stdout = output
+	cmd.Stderr = output
+
+	var err error
+	defer func() {
+		if t.Failed() {
+			fmt.Printf("redis-server on %d error: %v", port, err)
+			fmt.Println(output.String())
+		}
+	}()
+
+	err = cmd.Start()
 	require.NoError(t, err)
 
-	return conn, nodeInfo{t: t, port: port, close: close}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	var conn net.Conn
+Loop:
+	for {
+		select {
+		case <-timer.C:
+			t.Fatalf("timeout starting redis-server")
+		default:
+			conn, err = net.Dial("tcp", "localhost:"+strconv.Itoa(port))
+			if err == nil {
+				break Loop
+			}
+			time.Sleep(1 * time.Second)
+		}
+	}
+
+	conn.(*net.TCPConn).SetReadDeadline(time.Now().Add(60 * time.Second)) // keep the root connection alive longer
+
+	close := func() error {
+		err := cmd.Process.Kill()
+		// println("master redis-server output:")
+		// fmt.Println(output.String())
+		if err != nil {
+			println("redis-server output:")
+			fmt.Println(output.String())
+			return err
+		}
+		return nil
+	}
+
+	return conn, nodeInfo{t: t, port: port, close: close, output: output}
 }
 
 func startMasterOn6379(t *testing.T) (net.Conn, nodeInfo) {
@@ -104,57 +165,6 @@ func newStartRedisServerCmd(port int, extraArgs ...string) *exec.Cmd {
 	}
 	args = append(args, extraArgs...)
 	return exec.Command(yourProgramPath, args...)
-}
-
-func startRedisServer(timeout time.Duration, port int, args ...string) (conn net.Conn, close func() error, err error) {
-	cmd := newStartRedisServerCmd(port, args...)
-	output := bytes.NewBuffer(nil)
-	cmd.Stdout = output
-	cmd.Stderr = output
-
-	defer func() {
-		if err != nil {
-			fmt.Printf("redis-server on %d output:", port)
-			fmt.Println(output.String())
-		}
-	}()
-
-	err = cmd.Start()
-	if err != nil {
-		return
-	}
-
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-Loop:
-	for {
-		select {
-		case <-timer.C:
-			err = fmt.Errorf("timeout starting redis-server")
-			return
-		default:
-			var err error
-			conn, err = net.Dial("tcp", "localhost:"+strconv.Itoa(port))
-			if err == nil {
-				break Loop
-			}
-			time.Sleep(1 * time.Second)
-		}
-	}
-
-	conn.(*net.TCPConn).SetReadDeadline(time.Now().Add(60 * time.Second)) // keep the root connection alive longer
-
-	return conn, func() error {
-		err := cmd.Process.Kill()
-		// println("master redis-server output:")
-		// fmt.Println(output.String())
-		if err != nil {
-			println("redis-server output:")
-			fmt.Println(output.String())
-			return err
-		}
-		return nil
-	}, nil
 }
 
 // we assume all the operations are finished in 1 second

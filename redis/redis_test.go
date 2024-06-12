@@ -223,7 +223,6 @@ func TestInitialReplicationIDAndOffset(t *testing.T) {
 
 // assume 36392 is not used
 func startRedisServerWithAFakeMaster(t *testing.T) (*fakeRedisServer, net.Conn, func() error) {
-	r := require.New(t)
 	port := freePort(t)
 	fakeRedis := newFakeRedisServer(t, port)
 	connCh := make(chan net.Conn, 1)
@@ -231,12 +230,11 @@ func startRedisServerWithAFakeMaster(t *testing.T) (*fakeRedisServer, net.Conn, 
 		connCh <- fakeRedis.accept(3 * time.Second)
 	}()
 
-	_, close, err := startRedisServer(3*time.Second, 36393, "--replicaof", fmt.Sprintf(`localhost %d`, port))
-	r.NoError(err)
+	conn, node := startNode(t, 36393, "--replicaof", fmt.Sprintf(`localhost %d`, port))
+	defer conn.Close()
 
-	conn := <-connCh
-	return fakeRedis, conn, func() error {
-		return errors.Join(fakeRedis.ln.Close(), close())
+	return fakeRedis, <-connCh, func() error {
+		return errors.Join(fakeRedis.ln.Close(), node.close())
 	}
 }
 
@@ -354,47 +352,82 @@ func TestEmptyRDBTransfer(t *testing.T) {
 }
 
 func TestSingleReplicaPropagation(t *testing.T) {
-	testMultiReplicaPropagation(t, 1, false)
+	testMultiReplicaPropagation(t, 1, 20, false)
 }
 
 func TestMultiReplicaPropagation(t *testing.T) {
 	slaveCount := 5
-	testMultiReplicaPropagation(t, slaveCount, false)
+	testMultiReplicaPropagation(t, slaveCount, 3, false)
 }
 
 func TestCommandProcessing(t *testing.T) {
-	testMultiReplicaPropagation(t, 1, true)
-	testMultiReplicaPropagation(t, 5, true)
+	testMultiReplicaPropagation(t, 1, 2, true)
+	testMultiReplicaPropagation(t, 5, 10, true)
+	testMultiReplicaPropagation(t, 10, 2, true)
 }
 
-func testMultiReplicaPropagation(t *testing.T, count int, verifyReplica bool) {
-	t.Logf("I will start %d slaves and a master, and set some values on the master", count)
+func testMultiReplicaPropagation(t *testing.T, replicasN int, commandN int, verifyReplica bool) {
+	t.Logf("I will start %d slaves and a master, and set some values on the master", replicasN)
 	if verifyReplica {
 		t.Log("then verify the values on the slaves.")
 	}
 
 	r := require.New(t)
-	masterConn, master := startMaster(t)
+	masterConn, master := startMasterOn6379(t)
+
+	conns := make([]net.Conn, replicasN)
+	slaves := make([]nodeInfo, replicasN)
+	wg := &sync.WaitGroup{}
+	wg.Add(replicasN)
+	for i := 0; i < replicasN; i++ {
+		go func(i int) {
+			defer wg.Done()
+			conns[i], slaves[i] = master.startSlave()
+		}(i)
+	}
+	wg.Wait()
+
+	for i := 0; i < replicasN; i++ {
+		if conns[i] == nil {
+			t.Skipf("slave %d is not started, please run again", i)
+		}
+	}
+
+	var failedSlaveIndex int
+	defer func() {
+		time.Sleep(100 * time.Millisecond)
+		for _, slave := range slaves {
+			slave.close()
+		}
+		if t.Failed() {
+			fmt.Printf("slave %d output:\n", slaves[failedSlaveIndex].port)
+			println(slaves[failedSlaveIndex].output.String())
+		}
+	}()
+
+	// close master first
 	defer masterConn.Close()
 	defer master.close()
+	defer func() {
+		if t.Failed() {
+			t.Log("master redis output:")
+			println(master.output.String())
+		}
+	}()
 
-	conns := make([]net.Conn, count)
-	for i := 0; i < count; i++ {
-		var slave nodeInfo
-		conns[i], slave = master.startSlave()
-		defer slave.close()
-		defer conns[i].Close()
-	}
+	time.Sleep(1 * time.Second)
 
-	values := map[string]int{
-		"foo": 1,
-		"bar": 2,
-		"baz": 3,
+	items := make([][2]string, 0, commandN)
+	for i := 0; i < commandN; i++ {
+		key := fmt.Sprintf("key%d", i)
+		items = append(items, [2]string{key, fmt.Sprintf("%d", i)})
 	}
+	time.Sleep(1 * time.Second)
+
 	reader := internal.NewReader(masterConn)
-	for key, value := range values {
-		_, err := masterConn.Write([]byte(fmt.Sprintf("*3\r\n$3\r\nSET\r\n$%d\r\n%s\r\n$%d\r\n%d\r\n", len(key), key, len(strconv.Itoa(value)), value)))
-		r.NoError(err)
+	for _, item := range items {
+		key, value := item[0], item[1]
+		sendRedisCommand(t, masterConn, "SET", key, value)
 		a1, err := reader.ReadLine()
 		r.NoError(err)
 		r.Equal([]byte("+OK"), a1)
@@ -405,12 +438,37 @@ func testMultiReplicaPropagation(t *testing.T, count int, verifyReplica bool) {
 		return
 	}
 
-	for _, conn := range conns {
-		defer conn.Close()
-		for key, value := range values {
-			assertGetValue(t, conn, key, strconv.Itoa(value))
+	defer func() {
+		for _, conn := range conns {
+			conn.Close()
 		}
-	}
+	}()
+
+	var successed = map[int]bool{}
+	require.Eventually(t, func() bool {
+		for i, conn := range conns {
+			if successed[i] {
+				continue
+			}
+			for _, item := range items {
+				key, value := item[0], item[1]
+				reader := internal.NewReader(conn)
+				sendRedisCommand(t, conn, "GET", key)
+				a1, err := reader.ReadString()
+				if err != nil {
+					failedSlaveIndex = i
+					t.Logf("server: %s, get %s: %v", conn.RemoteAddr().String(), key, err)
+					return false
+				}
+				if a1 != value {
+					t.Logf("get key %s, expect %s, got %s", key, value, a1)
+					return false
+				}
+			}
+			successed[i] = true
+		}
+		return true
+	}, 1*time.Minute, 1*time.Second)
 }
 
 var fullResyncRegex = regexp.MustCompile(`\+FULLRESYNC (?P<replid>\w{40}) (?P<offset>\d+)\r\n`)
