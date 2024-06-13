@@ -734,3 +734,20 @@ func TestReadValueWithExpiry(t *testing.T) {
 	_, err = reader.ReadLine()
 	r.NoError(err)
 }
+
+/**********************************************
+ *
+ *             STREAMS
+ *
+ **********************************************/
+func TestTypeCommand(t *testing.T) {
+	conn, node := startMaster(t)
+	defer conn.Close()
+	defer node.close()
+
+	sendRedisCommand(t, conn, "SET", "some_key", "foo")
+	assertReceiveOk(t, conn)
+	sendRedisCommand(t, conn, "TYPE", "some_key")
+	actual := readN(t, conn, 9)
+	require.Equal(t, []byte("+string\r\n"), actual)
+}

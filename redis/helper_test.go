@@ -114,14 +114,14 @@ Loop:
 	conn.(*net.TCPConn).SetReadDeadline(time.Now().Add(60 * time.Second)) // keep the root connection alive longer
 
 	close := func() error {
-		err := cmd.Process.Kill()
-		// println("master redis-server output:")
-		// fmt.Println(output.String())
-		if err != nil {
-			println("redis-server output:")
-			fmt.Println(output.String())
-			return err
-		}
+		defer func() {
+			if t.Failed() {
+				println("redis-server output:")
+				fmt.Println(output.String())
+			}
+		}()
+
+		cmd.Process.Kill()
 		return nil
 	}
 
@@ -220,15 +220,6 @@ func readBulkString(t *testing.T, reader *internal.Reader) string {
 	r.NoError(err)
 	r.Equal(readN, length+2)
 	return string(buf)
-}
-
-func assertReadLines(t *testing.T, reader *internal.Reader, expected ...string) {
-	r := require.New(t)
-	for _, e := range expected {
-		a, err := reader.ReadLine()
-		r.NoError(err)
-		r.Equal(e, string(a))
-	}
 }
 
 func readN(t *testing.T, conn net.Conn, n int) []byte {
