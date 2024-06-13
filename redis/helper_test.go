@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -348,4 +349,18 @@ func assertGetArray(t *testing.T, conn net.Conn, strict bool, expected ...string
 			r.Contains(expected, actual)
 		}
 	}
+}
+
+func assertReceiveErr(t *testing.T, reader *internal.Reader) {
+	r := require.New(t)
+	line, err := reader.ReadLine()
+	r.NoError(err)
+	r.True(strings.HasPrefix(string(line), "-ERR"), "actual: %s", string(line))
+}
+
+func assertReceiveSimpleString(t *testing.T, reader *internal.Reader, expected string) {
+	r := require.New(t)
+	actual, err := reader.ReadString()
+	r.NoError(err)
+	r.Equal(expected, string(actual))
 }

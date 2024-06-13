@@ -744,25 +744,46 @@ func TestTypeCommand(t *testing.T) {
 	conn, node := startMaster(t)
 	defer conn.Close()
 	defer node.close()
+	reader := internal.NewReader(conn)
 
 	sendRedisCommand(t, conn, "SET", "some_key", "foo")
 	assertReceiveOk(t, conn)
 	sendRedisCommand(t, conn, "TYPE", "some_key")
-	actual := readN(t, conn, 9)
-	require.Equal(t, []byte("+string\r\n"), actual)
+	assertReceiveSimpleString(t, reader, "string")
 }
 
 func TestCreateAStream(t *testing.T) {
 	conn, node := startMaster(t)
 	defer conn.Close()
 	defer node.close()
+	reader := internal.NewReader(conn)
 
 	id := "0-1"
 	sendRedisCommand(t, conn, "XADD", "mystream", id, "foo", "bar")
-	reader := internal.NewReader(conn)
-	actual := readBulkString(t, reader)
-	require.Equal(t, id, strings.TrimSpace(actual))
+	assertReceiveSimpleString(t, reader, id)
+
 	sendRedisCommand(t, conn, "TYPE", "mystream")
-	actual2 := readN(t, conn, 9)
-	require.Equal(t, []byte("+stream\r\n"), actual2)
+	assertReceiveSimpleString(t, reader, "stream")
+}
+
+func TestValidatingEntryIDs(t *testing.T) {
+	conn, node := startMaster(t)
+	defer conn.Close()
+	defer node.close()
+
+	reader := internal.NewReader(conn)
+	sendRedisCommand(t, conn, "XADD", "stream_key", "1-1", "foo", "bar")
+	assertReceiveSimpleString(t, reader, "1-1")
+
+	sendRedisCommand(t, conn, "XADD", "stream_key", "1-2", "bar", "baz")
+	assertReceiveSimpleString(t, reader, "1-2")
+
+	sendRedisCommand(t, conn, "XADD", "stream_key", "1-2", "baz", "foo")
+	assertReceiveSimpleString(t, reader, "(error) ERR The ID specified in XADD is equal or smaller than the target stream top item")
+
+	sendRedisCommand(t, conn, "XADD", "stream_key", "0-3", "baz", "foo")
+	assertReceiveSimpleString(t, reader, "(error) ERR The ID specified in XADD is equal or smaller than the target stream top item")
+
+	sendRedisCommand(t, conn, "XADD", "stream_key", "0-0", "baz", "foo")
+	assertReceiveSimpleString(t, reader, "(error) ERR The ID specified in XADD must be greater than 0-0")
 }
