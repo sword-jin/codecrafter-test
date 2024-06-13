@@ -751,3 +751,18 @@ func TestTypeCommand(t *testing.T) {
 	actual := readN(t, conn, 9)
 	require.Equal(t, []byte("+string\r\n"), actual)
 }
+
+func TestCreateAStream(t *testing.T) {
+	conn, node := startMaster(t)
+	defer conn.Close()
+	defer node.close()
+
+	id := "0-1"
+	sendRedisCommand(t, conn, "XADD", "mystream", id, "foo", "bar")
+	reader := internal.NewReader(conn)
+	actual := readBulkString(t, reader)
+	require.Equal(t, id, strings.TrimSpace(actual))
+	sendRedisCommand(t, conn, "TYPE", "mystream")
+	actual2 := readN(t, conn, 9)
+	require.Equal(t, []byte("+stream\r\n"), actual2)
+}
