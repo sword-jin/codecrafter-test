@@ -2,10 +2,12 @@ package redis_test
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -583,6 +585,11 @@ func TestWaitWithMultipleCommands(t *testing.T) {
 	}, 10*time.Second, 100*time.Millisecond)
 }
 
+/**********************************************
+ *
+ *             RDB PERSISTENCE
+ *
+ **********************************************/
 func TestRDBFileConfig(t *testing.T) {
 	dir := "/tmp/redis-files"
 	filename := "dump.rdb"
@@ -590,9 +597,140 @@ func TestRDBFileConfig(t *testing.T) {
 	defer conn.Close()
 	defer master.close()
 	sendRedisCommand(t, conn, "CONFIG", "GET", "dir")
-	assertGetArray(t, conn, "dir", dir)
+	assertGetArray(t, conn, true, "dir", dir)
 	sendRedisCommand(t, conn, "CONFIG", "GET", "dbfilename")
-	assertGetArray(t, conn, "dbfilename", filename)
+	assertGetArray(t, conn, true, "dbfilename", filename)
 	sendRedisCommand(t, conn, "CONFIG", "GET", "other")
-	assertGetArray(t, conn)
+	assertGetArray(t, conn, true)
+}
+
+// We don't test with any other types, only string and the value is also string
+// because the int value is also has complicated encoding
+func TestReadAKey(t *testing.T) {
+	t.Log("in this test, we only has one key <string, string>")
+	r := require.New(t)
+	b, err := os.ReadFile("testdata/a_string.rdb")
+	r.NoError(err)
+	var dir = t.TempDir()
+	r.NoError(os.WriteFile(dir+"/dump.rdb", b, 0644))
+
+	conn, node := startNode(t, freePort(t), "--dir", dir, "--dbfilename", "dump.rdb")
+	defer conn.Close()
+	defer node.close()
+
+	sendRedisCommand(t, conn, "KEYS", "*")
+	assertGetArray(t, conn, true, "foo")
+}
+
+func TestReadAStringValue(t *testing.T) {
+	t.Log("in this test, we only has one key <string, string>, and test the value")
+
+	r := require.New(t)
+	b, err := os.ReadFile("testdata/a_string.rdb")
+	r.NoError(err)
+	var dir = t.TempDir()
+	r.NoError(os.WriteFile(dir+"/dump.rdb", b, 0644))
+
+	conn, node := startNode(t, freePort(t), "--dir", dir, "--dbfilename", "dump.rdb")
+	defer conn.Close()
+	defer node.close()
+
+	sendRedisCommand(t, conn, "KEYS", "*")
+	assertGetArray(t, conn, false, "foo")
+	assertGetValue(t, conn, "foo", "bar")
+}
+
+func TestMultipleKeys(t *testing.T) {
+	t.Log("in this test, we only has multiple keys <string, string>")
+
+	r := require.New(t)
+	b, err := os.ReadFile("testdata/multiple_string.rdb")
+	r.NoError(err)
+	var dir = t.TempDir()
+	r.NoError(os.WriteFile(dir+"/dump.rdb", b, 0644))
+
+	conn, node := startNode(t, freePort(t), "--dir", dir, "--dbfilename", "dump.rdb")
+	defer conn.Close()
+	defer node.close()
+
+	sendRedisCommand(t, conn, "KEYS", "*")
+	assertGetArray(t, conn, false, "foo", "bar")
+}
+
+func TestMultipleStringValues(t *testing.T) {
+	t.Log("in this test, we only has multiple keys <string, string>, and test the value")
+	r := require.New(t)
+	b, err := os.ReadFile("testdata/multiple_string.rdb")
+	r.NoError(err)
+	var dir = t.TempDir()
+	r.NoError(os.WriteFile(dir+"/dump.rdb", b, 0644))
+
+	conn, node := startNode(t, freePort(t), "--dir", dir, "--dbfilename", "dump.rdb")
+	defer conn.Close()
+	defer node.close()
+
+	assertGetValue(t, conn, "foo", "bar")
+	assertGetValue(t, conn, "bar", "baz")
+}
+
+// This is the commands to generate the rdb file
+// 127.0.0.1:16379> set bar baz PX 10240
+// OK
+// 127.0.0.1:16379> set loz sha
+// OK
+// 127.0.0.1:16379> set foo bar EX 3
+// OK
+// 127.0.0.1:16379> save
+// OK
+func TestReadValueWithExpiry(t *testing.T) {
+	t.Log("in this test, we only has two key <string, string>, one with expiry, one not")
+
+	r := require.New(t)
+	b, err := os.ReadFile("testdata/expires_string.rdb")
+	r.NoError(err)
+
+	after3Seconds := time.Now().Add(3 * time.Second).UnixMilli()
+	barTimestampBytes := make([]byte, 8)
+	binary.LittleEndian.PutUint64(barTimestampBytes, uint64(after3Seconds))
+
+	after10Seconds := time.Now().Add(10 * time.Second).UnixMilli()
+	fooTimestampBytes := make([]byte, 8)
+	binary.LittleEndian.PutUint64(fooTimestampBytes, uint64(after10Seconds))
+
+	b = bytes.Replace(b,
+		[]byte{0xFC, 0x3d, 0xb4, 0x2c, 0x10, 0x90, 0x01, 0x00, 0x00}, // the fixed expiry time for 'bar'
+		append([]byte{0xFC}, barTimestampBytes...),
+		1)
+	b = bytes.Replace(b,
+		[]byte{0xFC, 0x68, 0xa8, 0x2c, 0x10, 0x90, 0x01, 0x00, 0x00}, // the fixed expiry time for 'foo'
+		append([]byte{0xFC}, fooTimestampBytes...),
+		1)
+
+	var dir = t.TempDir()
+	r.NoError(os.WriteFile(dir+"/dump.rdb", b, 0644))
+
+	conn, node := startNode(t, freePort(t), "--dir", dir, "--dbfilename", "dump.rdb")
+	defer conn.Close()
+	defer node.close()
+
+	defer func() {
+		if t.Failed() {
+			println(node.output.String())
+		}
+	}()
+
+	assertGetValue(t, conn, "foo", "bar")
+	assertGetValue(t, conn, "bar", "baz")
+
+	reader := internal.NewReader(conn)
+	r.Eventually(func() bool {
+		// bar should be expired
+		sendRedisCommand(t, conn, "GET", "bar")
+		_, err := reader.ReadLine()
+		return err == nil
+	}, 5*time.Second, 500*time.Millisecond)
+
+	sendRedisCommand(t, conn, "GET", "foo")
+	_, err = reader.ReadLine()
+	r.NoError(err)
 }
