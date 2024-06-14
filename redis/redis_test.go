@@ -935,6 +935,15 @@ func TestQueryMultipleStreamsUsingXREAD(t *testing.T) {
 }
 
 func TestBlockingReads(t *testing.T) {
+	testBlockingReads(t, 1000, 100)
+}
+
+func TestBlockingReadsWithoutTimeout(t *testing.T) {
+	testBlockingReads(t, 0, 1000)
+}
+
+// blockTimeout can't be less than 0, sendAfterSeconds can't greater 10000
+func testBlockingReads(t *testing.T, blockTimeout int, sendAfterSeconds int) {
 	conn, node := startMaster(t)
 	defer conn.Close()
 	defer node.close()
@@ -949,7 +958,7 @@ func TestBlockingReads(t *testing.T) {
 
 	done := make(chan struct{}, 1)
 	go func() {
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(time.Duration(sendAfterSeconds) * time.Millisecond)
 		conn := node.dial()
 		reader := internal.NewReader(conn)
 		defer conn.Close()
@@ -958,11 +967,11 @@ func TestBlockingReads(t *testing.T) {
 		close(done)
 	}()
 
-	sendRedisCommand(t, conn, "XREAD", "block", "1000", "streams", "stream_key", "0-1") // wait for 1 second
+	sendRedisCommand(t, conn, "XREAD", "block", strconv.Itoa(blockTimeout), "streams", "stream_key", "0-1")
 	assertXRangeValue(t, reader, "*1*2$10stream_key*1*2$30-2*2$11temperature$295")
 	select {
 	case <-done:
-	case <-time.After(3 * time.Second):
+	case <-time.After(10 * time.Second):
 		require.Fail(t, "timeout")
 	}
 }
