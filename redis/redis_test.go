@@ -933,3 +933,36 @@ func TestQueryMultipleStreamsUsingXREAD(t *testing.T) {
 	sendRedisCommand(t, conn, "XREAD", "streams", "some_key4", "some_key5", "not_exists", "0-3", "3-100", "0-0")
 	assertXRangeValue(t, reader, "*2*2$9some_key4*1*2$30-4*2$4foo4$4bar4*2$9some_key5*1*2$54-100*2$4foo8$4bar8")
 }
+
+func TestBlockingReads(t *testing.T) {
+	conn, node := startMaster(t)
+	defer conn.Close()
+	defer node.close()
+
+	reader := internal.NewReader(conn)
+
+	sendRedisCommand(t, conn, "XADD", "stream_key", "0-1", "temperature", "96")
+	assertReceiveSimpleString(t, reader, "0-1")
+
+	sendRedisCommand(t, conn, "XREAD", "block", "100", "streams", "stream_key", "0-1") // get nothing
+	assertGetArray(t, conn, true)
+
+	done := make(chan struct{}, 1)
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		conn := node.dial()
+		reader := internal.NewReader(conn)
+		defer conn.Close()
+		sendRedisCommand(t, conn, "XADD", "stream_key", "0-2", "temperature", "95")
+		assertReceiveSimpleString(t, reader, "0-2")
+		close(done)
+	}()
+
+	sendRedisCommand(t, conn, "XREAD", "block", "1000", "streams", "stream_key", "0-1") // wait for 1 second
+	assertXRangeValue(t, reader, "*1*2$10stream_key*1*2$30-2*2$11temperature$295")
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		require.Fail(t, "timeout")
+	}
+}

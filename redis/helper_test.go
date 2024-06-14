@@ -63,7 +63,7 @@ func (n nodeInfo) dial() net.Conn {
 }
 
 func startNode(t *testing.T, port int, args ...string) (net.Conn, nodeInfo) {
-	timeout := 3 * time.Second
+	timeout := 10 * time.Second // may need compile your program
 checkPort:
 	for {
 		select {
