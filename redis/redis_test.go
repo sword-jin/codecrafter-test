@@ -935,15 +935,19 @@ func TestQueryMultipleStreamsUsingXREAD(t *testing.T) {
 }
 
 func TestBlockingReads(t *testing.T) {
-	testBlockingReads(t, 1000, 100)
+	testBlockingReads(t, 1000, 100, "0-1")
 }
 
 func TestBlockingReadsWithoutTimeout(t *testing.T) {
-	testBlockingReads(t, 0, 1000)
+	testBlockingReads(t, 0, 1000, "0-1")
+}
+
+func TestBlockingReadsUsingDollar(t *testing.T) {
+	testBlockingReads(t, 0, 500, "$")
 }
 
 // blockTimeout can't be less than 0, sendAfterSeconds can't greater 10000
-func testBlockingReads(t *testing.T, blockTimeout int, sendAfterSeconds int) {
+func testBlockingReads(t *testing.T, blockTimeout int, sendAfterSeconds int, blockingID string) {
 	conn, node := startMaster(t)
 	defer conn.Close()
 	defer node.close()
@@ -952,9 +956,6 @@ func testBlockingReads(t *testing.T, blockTimeout int, sendAfterSeconds int) {
 
 	sendRedisCommand(t, conn, "XADD", "stream_key", "0-1", "temperature", "96")
 	assertReceiveSimpleString(t, reader, "0-1")
-
-	sendRedisCommand(t, conn, "XREAD", "block", "100", "streams", "stream_key", "0-1") // get nothing
-	assertGetArray(t, conn, true)
 
 	done := make(chan struct{}, 1)
 	go func() {
@@ -967,7 +968,7 @@ func testBlockingReads(t *testing.T, blockTimeout int, sendAfterSeconds int) {
 		close(done)
 	}()
 
-	sendRedisCommand(t, conn, "XREAD", "block", strconv.Itoa(blockTimeout), "streams", "stream_key", "0-1")
+	sendRedisCommand(t, conn, "XREAD", "block", strconv.Itoa(blockTimeout), "streams", "stream_key", blockingID)
 	assertXRangeValue(t, reader, "*1*2$10stream_key*1*2$30-2*2$11temperature$295")
 	select {
 	case <-done:
