@@ -223,26 +223,25 @@ func readBulkString(t *testing.T, reader *internal.Reader) string {
 	return string(buf)
 }
 
-func readN(t *testing.T, conn net.Conn, n int) []byte {
+func readN(t *testing.T, reader *internal.Reader, n int) []byte {
 	r := require.New(t)
 	actual := make([]byte, n)
-	conn.(*net.TCPConn).SetReadDeadline(time.Now().Add(200 * time.Millisecond))
-	readN, err := conn.Read(actual)
+	readN, err := reader.Read(actual)
 	r.NoError(err)
 	r.Equal(n, readN, "actual: %s", string(actual))
 	return actual
 }
 
-func assertReadNContains(t *testing.T, ro net.Conn, n int, expected string) {
+func assertReadNContains(t *testing.T, reader *internal.Reader, n int, expected string) {
 	r := require.New(t)
 	a := assert.New(t)
-	actual := readN(t, ro, n)
+	actual := readN(t, reader, n)
 	a.Contains(string(actual), expected)
 	// after read, we should read all the remaining bytes
 	var err error
 	for {
 		b := make([]byte, 1)
-		_, err = ro.Read(b)
+		_, err = reader.Read(b)
 		if err != nil {
 			break
 		}
@@ -291,12 +290,12 @@ func (s *fakeRedisServer) accept(timeout time.Duration) net.Conn {
 	return conn
 }
 
-func (s *fakeRedisServer) assertReceiveAndReply(conn net.Conn, expected string, reply []byte, skipNBytes ...int) {
+func (s *fakeRedisServer) assertReceiveAndReply(reader *internal.Reader, conn net.Conn, expected string, reply []byte, skipNBytes ...int) {
 	expectedRead := len(expected)
 	for _, n := range skipNBytes {
 		expectedRead += n
 	}
-	assertReadNContains(s.t, conn, expectedRead, string(expected))
+	assertReadNContains(s.t, reader, expectedRead, string(expected))
 	_, err := conn.Write(reply)
 	s.r.NoError(err)
 }
@@ -315,9 +314,9 @@ func assertGetValue(t *testing.T, conn net.Conn, key, value string) {
 	r.Equal([]byte(value), a2)
 }
 
-func assertReceiveOk(t *testing.T, conn net.Conn) {
+func assertReceiveOk(t *testing.T, reader *internal.Reader) {
 	r := require.New(t)
-	actual := readN(t, conn, 5)
+	actual := readN(t, reader, 5)
 	r.Equal([]byte(ok), actual)
 }
 
@@ -363,4 +362,15 @@ func assertReceiveSimpleString(t *testing.T, reader *internal.Reader, expected s
 	actual, err := reader.ReadString()
 	r.NoError(err)
 	r.Equal(expected, string(actual))
+}
+
+func assertXRangeValue(t *testing.T, reader *internal.Reader, expected string) {
+	b := make([]byte, 1024)
+	n, err := reader.Read(b)
+	require.NoError(t, err)
+	actual := ""
+	for _, s := range bytes.Split(b[:n], []byte("\r\n")) {
+		actual += string(bytes.TrimRight(s, "\r\n"))
+	}
+	require.Equal(t, expected, actual)
 }
