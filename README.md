@@ -26,6 +26,9 @@ YOUR_REDIS_PROGRAM_PATH=???/codecrafters-redis-rust/spawn_redis_server.sh go tes
 | Build your own HTTP server | Free   | https://app.codecrafters.io/courses/http-server | ./codecrafters-http-server-rust |
 | Build your own Redis       | ✅      | https://app.codecrafters.io/courses/redis/      | ./codecrafters-redis-rust       |
 
+All of my implementations are very straightforward, mostly just pass the test cases. So the code design may not be good, but it's still readable.
+Also, because of the test, so refactoring is not hard and fun, I really recommend you to use this project to learn rust by refactoring my implementation.
+
 ## Important
 
 If this project infringes your business interests, please contact me to delete it.
