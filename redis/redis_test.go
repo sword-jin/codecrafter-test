@@ -604,12 +604,13 @@ func TestRDBFileConfig(t *testing.T) {
 	conn, master := startNode(t, freePort(t), "--dir", dir, "--dbfilename", filename)
 	defer conn.Close()
 	defer master.close()
+	reader := internal.NewReader(conn)
 	sendRedisCommand(t, conn, "CONFIG", "GET", "dir")
-	assertGetArray(t, conn, true, "dir", dir)
+	assertGetArray(t, reader, true, "dir", dir)
 	sendRedisCommand(t, conn, "CONFIG", "GET", "dbfilename")
-	assertGetArray(t, conn, true, "dbfilename", filename)
+	assertGetArray(t, reader, true, "dbfilename", filename)
 	sendRedisCommand(t, conn, "CONFIG", "GET", "other")
-	assertGetArray(t, conn, true)
+	assertGetArray(t, reader, true)
 }
 
 // We don't test with any other types, only string and the value is also string
@@ -625,9 +626,10 @@ func TestReadAKey(t *testing.T) {
 	conn, node := startNode(t, freePort(t), "--dir", dir, "--dbfilename", "dump.rdb")
 	defer conn.Close()
 	defer node.close()
+	reader := internal.NewReader(conn)
 
 	sendRedisCommand(t, conn, "KEYS", "*")
-	assertGetArray(t, conn, true, "foo")
+	assertGetArray(t, reader, true, "foo")
 }
 
 func TestReadAStringValue(t *testing.T) {
@@ -642,10 +644,11 @@ func TestReadAStringValue(t *testing.T) {
 	conn, node := startNode(t, freePort(t), "--dir", dir, "--dbfilename", "dump.rdb")
 	defer conn.Close()
 	defer node.close()
+	reader := internal.NewReader(conn)
 
 	sendRedisCommand(t, conn, "KEYS", "*")
-	assertGetArray(t, conn, false, "foo")
-	assertGetValue(t, conn, "foo", "bar")
+	assertGetArray(t, reader, false, "foo")
+	assertGetValue(t, conn, reader, "foo", "bar")
 }
 
 func TestMultipleKeys(t *testing.T) {
@@ -660,9 +663,10 @@ func TestMultipleKeys(t *testing.T) {
 	conn, node := startNode(t, freePort(t), "--dir", dir, "--dbfilename", "dump.rdb")
 	defer conn.Close()
 	defer node.close()
+	reader := internal.NewReader(conn)
 
 	sendRedisCommand(t, conn, "KEYS", "*")
-	assertGetArray(t, conn, false, "foo", "bar")
+	assertGetArray(t, reader, false, "foo", "bar")
 }
 
 func TestMultipleStringValues(t *testing.T) {
@@ -676,9 +680,10 @@ func TestMultipleStringValues(t *testing.T) {
 	conn, node := startNode(t, freePort(t), "--dir", dir, "--dbfilename", "dump.rdb")
 	defer conn.Close()
 	defer node.close()
+	reader := internal.NewReader(conn)
 
-	assertGetValue(t, conn, "foo", "bar")
-	assertGetValue(t, conn, "bar", "baz")
+	assertGetValue(t, conn, reader, "foo", "bar")
+	assertGetValue(t, conn, reader, "bar", "baz")
 }
 
 // This is the commands to generate the rdb file
@@ -726,11 +731,11 @@ func TestReadValueWithExpiry(t *testing.T) {
 			println(node.output.String())
 		}
 	}()
-
-	assertGetValue(t, conn, "foo", "bar")
-	assertGetValue(t, conn, "bar", "baz")
-
 	reader := internal.NewReader(conn)
+
+	assertGetValue(t, conn, reader, "foo", "bar")
+	assertGetValue(t, conn, reader, "bar", "baz")
+
 	r.Eventually(func() bool {
 		// bar should be expired
 		sendRedisCommand(t, conn, "GET", "bar")
@@ -837,11 +842,10 @@ func TestQueryEntriesFromStream(t *testing.T) {
 	conn, node := startMaster(t)
 	defer conn.Close()
 	defer node.close()
+	reader := internal.NewReader(conn)
 
 	sendRedisCommand(t, conn, "XRANGE", "nonexistent_stream", "-", "+")
-	assertGetArray(t, conn, true)
-
-	reader := internal.NewReader(conn)
+	assertGetArray(t, reader, true)
 
 	sendRedisCommand(t, conn, "XADD", "stream_key", "0-1", "foo", "bar")
 	assertReceiveSimpleString(t, reader, "0-1")
@@ -935,19 +939,59 @@ func TestQueryMultipleStreamsUsingXREAD(t *testing.T) {
 }
 
 func TestBlockingReads(t *testing.T) {
-	testBlockingReads(t, 1000, 100, "0-1")
+	testBlockingReads(t, 1000, 100)
 }
 
 func TestBlockingReadsWithoutTimeout(t *testing.T) {
-	testBlockingReads(t, 0, 1000, "0-1")
+	testBlockingReads(t, 0, 1000)
 }
 
 func TestBlockingReadsUsingDollar(t *testing.T) {
-	testBlockingReads(t, 0, 500, "$")
+	conn, node := startMaster(t)
+	defer conn.Close()
+	defer node.close()
+	r := require.New(t)
+
+	reader := internal.NewReader(conn)
+	sendRedisCommand(t, conn, "XADD", "key1", "0-1", "temperature", "96")
+	assertReceiveSimpleString(t, reader, "0-1")
+	sendRedisCommand(t, conn, "XREAD", "block", "100", "streams", "key1", "0-1") // block for 100ms, nothing received
+	assertGetArray(t, reader, true)
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		conn := node.dial()
+		defer conn.Close()
+		reader := internal.NewReader(conn)
+		sendRedisCommand(t, conn, "XADD", "key1", "0-2", "temperature", "95")
+		assertReceiveSimpleString(t, reader, "0-2")
+		sendRedisCommand(t, conn, "XADD", "key1", "0-*", "temperature", "96")
+		assertReceiveSimpleString(t, reader, "0-3")
+	}()
+
+	sendRedisCommand(t, conn, "XREAD", "block", "1000", "streams", "key1", "0-1") // block for 1s
+	assertXRangeValue(t, reader, "*1*2$4key1*1*2$30-2*2$11temperature$295")       // only receive one new message
+
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		conn := node.dial()
+		defer conn.Close()
+		reader := internal.NewReader(conn)
+		sendRedisCommand(t, conn, "XADD", "key2", "0-2", "temperature", "95")
+		assertReceiveSimpleString(t, reader, "0-2")
+	}()
+
+	start := time.Now()
+	sendRedisCommand(t, conn, "XREAD", "block", 0, "streams", "key2", "$")
+	assertXRangeValue(t, reader, "*1*2$4key2*1*2$30-2*2$11temperature$295")
+	r.Greater(time.Since(start).Milliseconds(), int64(500))
 }
 
 // blockTimeout can't be less than 0, sendAfterSeconds can't greater 10000
-func testBlockingReads(t *testing.T, blockTimeout int, sendAfterSeconds int, blockingID string) {
+// this testcase is not correct actually, the waiting conn should only receive
+// one new message. test passes is because we just send one message.
+// The full test should be in TestBlockingReadsUsingDollar.
+func testBlockingReads(t *testing.T, blockTimeout int, sendAfterSeconds int) {
 	conn, node := startMaster(t)
 	defer conn.Close()
 	defer node.close()
@@ -961,14 +1005,14 @@ func testBlockingReads(t *testing.T, blockTimeout int, sendAfterSeconds int, blo
 	go func() {
 		time.Sleep(time.Duration(sendAfterSeconds) * time.Millisecond)
 		conn := node.dial()
-		reader := internal.NewReader(conn)
 		defer conn.Close()
+		reader := internal.NewReader(conn)
 		sendRedisCommand(t, conn, "XADD", "stream_key", "0-2", "temperature", "95")
 		assertReceiveSimpleString(t, reader, "0-2")
 		close(done)
 	}()
 
-	sendRedisCommand(t, conn, "XREAD", "block", strconv.Itoa(blockTimeout), "streams", "stream_key", blockingID)
+	sendRedisCommand(t, conn, "XREAD", "block", strconv.Itoa(blockTimeout), "streams", "stream_key", "0-1")
 	assertXRangeValue(t, reader, "*1*2$10stream_key*1*2$30-2*2$11temperature$295")
 	select {
 	case <-done:

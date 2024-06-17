@@ -300,9 +300,8 @@ func (s *fakeRedisServer) assertReceiveAndReply(reader *internal.Reader, conn ne
 	s.r.NoError(err)
 }
 
-func assertGetValue(t *testing.T, conn net.Conn, key, value string) {
+func assertGetValue(t *testing.T, conn net.Conn, reader *internal.Reader, key, value string) {
 	r := require.New(t)
-	reader := internal.NewReader(conn)
 
 	_, err := conn.Write([]byte(fmt.Sprintf("*2\r\n$3\r\nGET\r\n$%d\r\n%s\r\n", len(key), key)))
 	r.NoError(err)
@@ -328,9 +327,8 @@ func assertReceiveInteger(t *testing.T, conn net.Conn, expected int) {
 	r.Equal(int64(expected), actual)
 }
 
-func assertGetArray(t *testing.T, conn net.Conn, strict bool, expected ...string) {
+func assertGetArray(t *testing.T, reader *internal.Reader, strict bool, expected ...string) {
 	r := require.New(t)
-	reader := internal.NewReader(conn)
 	length, err := reader.ReadArrayLen()
 	r.NoError(err)
 	r.Len(expected, length)
