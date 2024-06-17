@@ -21,10 +21,10 @@ YOUR_REDIS_PROGRAM_PATH=???/codecrafters-redis-rust/spawn_redis_server.sh go tes
 
 ## Supported Courses
 
-| Course                     | Status | Link                                            |
-| -------------------------- | ------ | ----------------------------------------------- |
-| Build your own HTTP server | Free   | https://app.codecrafters.io/courses/http-server |
-| Build your own Redis       | ✅      | https://app.codecrafters.io/courses/redis/      |
+| Course                     | Status | Link                                            | My implementation               |
+| -------------------------- | ------ | ----------------------------------------------- | ------------------------------- |
+| Build your own HTTP server | Free   | https://app.codecrafters.io/courses/http-server | ./codecrafters-http-server-rust |
+| Build your own Redis       | ✅      | https://app.codecrafters.io/courses/redis/      | ./codecrafters-redis-rust       |
 
 ## Important
 
