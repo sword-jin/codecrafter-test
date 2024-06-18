@@ -21,10 +21,11 @@ YOUR_REDIS_PROGRAM_PATH=???/codecrafters-redis-rust/spawn_redis_server.sh go tes
 
 ## Supported Courses
 
-| Course                     | Status | Link                                            | My implementation               |
-| -------------------------- | ------ | ----------------------------------------------- | ------------------------------- |
-| Build your own HTTP server | Free   | https://app.codecrafters.io/courses/http-server | ./codecrafters-http-server-rust |
-| Build your own Redis       | ✅      | https://app.codecrafters.io/courses/redis/      | ./codecrafters-redis-rust       |
+| Course                     | Status          | Link                                             | My implementation                    |
+| -------------------------- | --------------- | ------------------------------------------------ | ------------------------------------ |
+| Build your own HTTP server | Free            | https://app.codecrafters.io/courses/http-server  | [➡️](./codecrafters-http-server-rust) |
+| Build your own Redis       | ✅               | https://app.codecrafters.io/courses/redis/       | [➡️](./codecrafters-redis-rust)       |
+| Build your own DNS server  | `dig` is enough | https://app.codecrafters.io/courses/dns-server// | [➡️](./codecrafters-dns-server-rust)  |
 
 All of my implementations are very straightforward, mostly just pass the test cases. So the code design may not be good, but it's still readable.
 Also, because of the test, so refactoring is not hard and fun, I really recommend you to use this project to learn rust by refactoring my implementation.
